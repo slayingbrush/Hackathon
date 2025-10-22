@@ -1,238 +1,145 @@
-# ============================================
-# MoveMap AI — Location Intelligence App (v2)
-# Author: Ahadu Mengesha
-# Features:
-#   - User enters city, ZIP, or address
-#   - Finds census tract via coordinates
-#   - Tries real Census API
-#   - Falls back to generated data if API fails
-#   - Calculates housing risk
-#   - Displays map + metrics
-# ============================================
 
-import os
-import random
-import requests
-import pandas as pd
-import numpy as np
-import folium
-from geopy.geocoders import Nominatim
+# MoveMap AI 
+
+
 import streamlit as st
 from streamlit_folium import st_folium
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
+
+from movemap_helpers import (
+    get_location_coords,
+    get_census_tract_from_coords,
+    generate_dummy_census_for_tract,
+    make_features,
+    train_model,
+)
+from movemap_map import make_map
+import movemap_ui as ui
 
 
-# ---------------------------
-# Helper Functions
-# ---------------------------
+st.set_page_config(page_title="MoveMap AI", layout="wide", page_icon="🏙️")
+ui.inject_css()
 
-def get_location_coords(location_name):
-    """Convert user input (like city or ZIP) to coordinates."""
-    try:
-        geolocator = Nominatim(user_agent="movemap_ai")
-        location = geolocator.geocode(location_name)
-        if location:
-            return location.latitude, location.longitude
-    except Exception as e:
-        st.error(f"Geocoding error: {e}")
-    return None, None
+# (helper functions and map are moved into movemap_helpers.py and movemap_map.py)
 
+# Sidebar
 
-def get_census_tract_from_coords(lat, lon):
-    """Use FCC API to find which Census tract a point is in."""
-    try:
-        url = f"https://geo.fcc.gov/api/census/area?lat={lat}&lon={lon}&format=json"
-        r = requests.get(url)
-        data = r.json()
-        tract = data["results"][0]["block_fips"][:11]
-        county_name = data["results"][0]["county_name"]
-        state_code = data["results"][0]["state_code"]
-        return tract, county_name, state_code
-    except Exception as e:
-        st.error(f"Tract lookup error: {e}")
-        return None, None, None
+import os
+local_logo = os.path.join(os.path.dirname(__file__), "assets", "logo.png")
+if os.path.exists(local_logo):
+    st.sidebar.image(local_logo, width=120)
+else:
+    st.sidebar.image(
+        "https://upload.wikimedia.org/wikipedia/commons/thumb/4/48/City_skyline_icon.svg/1200px-City_skyline_icon.svg.png",
+        width=100,
+    )
+st.sidebar.title("MoveMap AI")
+st.sidebar.markdown(
+    "Visualize **housing risk and equity** using simulated data and AI modeling."
+)
+st.sidebar.markdown("---")
+st.sidebar.caption("Developed by UTK NSBE")
 
 
-# ---------------------------
-# Data Generation / Census
-# ---------------------------
+#  Main Interface
 
-def get_single_tract_data(tract_id, key="YOUR_CENSUS_API_KEY", year="2023"):
-    """Try to fetch real Census ACS 5-Year data for a given tract."""
-    try:
-        state_fips = tract_id[:2]
-        county_fips = tract_id[2:5]
-        tract_fips = tract_id[5:]
-        vars = ["B19013_001E", "B17001_002E"]
-        url = (
-            f"https://api.census.gov/data/{year}/acs/acs5?"
-            f"get=NAME,{','.join(vars)}"
-            f"&for=tract:{tract_fips}&in=state:{state_fips}+county:{county_fips}&key={key}"
-        )
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            raise ValueError(f"Census API error: {r.status_code}")
-        df = pd.DataFrame(r.json()[1:], columns=r.json()[0])
-        df.rename(
-            columns={
-                "B19013_001E": "median_income",
-                "B17001_002E": "poverty_count",
-            },
-            inplace=True,
-        )
-        df["GEOID"] = state_fips + county_fips + tract_fips
-        return df
-    except Exception as e:
-        st.warning(f"Census API failed: {e}")
-        return None
+st.title("🏙️ MoveMap AI — Intelligent Housing Risk Explorer")
+st.write(
+    "Enter any **city, ZIP code, or neighborhood** to visualize "
+    "housing affordability and displacement risk."
+)
 
+# ---------------- Session State ------------------
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+if "results" not in st.session_state:
+    st.session_state.results = {}
 
-def generate_dummy_census_for_tract(tract_id, name="Tract"):
-    """Generate fallback mock census data for a single tract."""
-    median_income = random.randint(30000, 90000)
-    poverty_count = random.randint(100, 800)
-    df = pd.DataFrame([{
-        "GEOID": tract_id,
-        "NAME": name,
-        "median_income": median_income,
-        "poverty_count": poverty_count
-    }])
-    return df
+user_input = st.text_input("📍 Search for a location:", "Knoxville, TN")
 
-
-def get_single_tract_data_or_dummy(tract_id, name, key="YOUR_CENSUS_API_KEY", year="2023"):
-    """Wrapper: Try Census API, else generate synthetic data."""
-    census = get_single_tract_data(tract_id, key, year)
-    if census is None or census.empty:
-        st.info("⚠️ Using generated data instead of real Census data.")
-        census = generate_dummy_census_for_tract(tract_id, name)
-    return census
-
-
-# ---------------------------
-# Model + Feature Creation
-# ---------------------------
-
-def make_features(census):
-    """Add dummy Zillow and eviction data for risk scoring."""
-    zillow = pd.DataFrame({
-        "region_name": [census["NAME"][0]],
-        "rent_change_12m": [round(random.uniform(0.02, 0.12), 3)]
-    })
-    ev = pd.DataFrame({
-        "GEOID": [census["GEOID"][0]],
-        "eviction_rate": [round(random.uniform(1, 10), 2)]
-    })
-
-    df = census.merge(ev, on="GEOID", how="left")
-    df = df.merge(zillow, left_on="NAME", right_on="region_name", how="left")
-    df["rent_income_ratio"] = df["rent_change_12m"] / df["median_income"].astype(float)
-    df["risk_score"] = (
-        0.5 * (df["rent_income_ratio"].fillna(0))
-        + 0.3 * (df["poverty_count"].astype(float) / 1000)
-        + 0.2 * (df["eviction_rate"].fillna(0) / 10)
-    ) * 100
-    return df
-
-
-def train_model(df):
-    """Train a Random Forest model, or handle single-sample case."""
-    X = df[["median_income", "poverty_count", "eviction_rate", "rent_income_ratio"]].fillna(0)
-    y = df["risk_score"]
-
-    if len(df) < 5:
-        # Too few samples — just simulate prediction
-        df["predicted_risk"] = df["risk_score"]
-        mae = 0
-        model = None
-    else:
-        from sklearn.model_selection import train_test_split
-        from sklearn.ensemble import RandomForestRegressor
-        from sklearn.metrics import mean_absolute_error
-
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        model = RandomForestRegressor(n_estimators=200, random_state=42)
-        model.fit(X_train, y_train)
-        mae = mean_absolute_error(y_test, model.predict(X_test))
-        df["predicted_risk"] = model.predict(X)
-
-    return model, df, mae
-
-
-
-def make_map(lat, lon, df, location_name):
-    """Create a Folium map centered on the user input location."""
-    m = folium.Map(location=[lat, lon], zoom_start=13)
-    folium.Marker(
-        [lat, lon],
-        popup=f"{location_name}<br>Predicted Risk: {df['predicted_risk'].iloc[0]:.2f}",
-        icon=folium.Icon(color="red", icon="home"),
-    ).add_to(m)
-    return m
-
-
-# ---------------------------
-# Streamlit UI
-# ---------------------------
-
-st.set_page_config(page_title="MoveMap AI", layout="wide")
-st.title("🏙️ MoveMap AI — Explore Housing Equity by Location")
-
-st.markdown("""
-Type a **city**, **ZIP code**, or **address** to analyze.
-If real U.S. Census data isn't available, this app will automatically
-generate plausible data for demonstration purposes.
-""")
-
-user_input = st.text_input("📍 Enter a location:", "Knoxville, TN")
-
+# Button Logic 
 if st.button("Analyze Location"):
-    with st.spinner("Looking up your area..."):
-        st.write("🔍 Step 1: Getting coordinates...")
+    progress_placeholder = st.empty()
+    loading_container = progress_placeholder.container()
+    
+    with st.spinner(""):
+        # Create a multi-column layout for the loading animation
+        col1, col2, col3 = loading_container.columns([1, 3, 1])
+        
+        # Initialize progress and status
+        progress_bar = col2.progress(0)
+        status_text = col2.empty()
+        
+        # Step 1: Getting coordinates (use centralized ui.loading_html)
+        status_text.markdown(ui.loading_html("🔍", "Locating coordinates..."), unsafe_allow_html=True)
+        progress_bar.progress(20)
         lat, lon = get_location_coords(user_input)
-        st.write("Coordinates:", lat, lon)
-
+        
         if lat is None:
-            st.error("❌ Location not found. Please try a valid city or ZIP.")
+            loading_container.empty()
+            st.error(" Location not found. Try another search.")
         else:
-            st.write("🔍 Step 2: Finding census tract...")
+            # Step 2: Finding census tract
+            status_text.markdown(ui.loading_html("📍", "Analyzing neighborhood boundaries..."), unsafe_allow_html=True)
+            progress_bar.progress(40)
             tract_id, county, state = get_census_tract_from_coords(lat, lon)
-            st.write("Tract:", tract_id, "| County:", county, "| State:", state)
-
+            
             if tract_id is None:
-                st.error("❌ Could not find tract for this location.")
+                loading_container.empty()
+                st.error(" Could not find tract for this location.")
             else:
-                st.success(f"✅ Found tract {tract_id} in {county}, {state}")
+                # Step 3: Generating and analyzing data
+                status_text.markdown(ui.loading_html("🏘️", "Processing neighborhood metrics..."), unsafe_allow_html=True)
+                progress_bar.progress(60)
+                census = generate_dummy_census_for_tract(tract_id, user_input)
+                
+                # Simulated delay for visual effect
+                import time
+                time.sleep(0.5)
+                
+                status_text.markdown(ui.loading_html("🤖", "Running AI risk analysis..."), unsafe_allow_html=True)
+                progress_bar.progress(80)
+                df = make_features(census)
+                model, df, mae = train_model(df)
+                
+                # Final animation
+                status_text.markdown(ui.loading_html("✨", "Preparing your custom visualization..."), unsafe_allow_html=True)
+                progress_bar.progress(100)
+                
+                # Add a small delay for the final animation
+                time.sleep(0.3)
+                
+                st.session_state.results = {
+                    "lat": lat, "lon": lon, "county": county, "state": state,
+                    "df": df, "mae": mae, "risk": df["predicted_risk"].iloc[0]
+                }
+                st.session_state.analysis_done = True
+                
+                # Clear the loading animation and rerun
+                loading_container.empty()
+                st.rerun()
 
-                st.write("📥 Step 3: Getting Census or generated data...")
-                census = get_single_tract_data_or_dummy(tract_id, name=user_input)
-                st.write("Census dataframe shape:", census.shape if census is not None else None)
+# ---------------- Display Results ----------------
+if st.session_state.analysis_done:
+    r = st.session_state.results
+    df = r["df"]
 
-                if census is None or census.empty:
-                    st.error("❌ No data (even dummy) could be created.")
-                else:
-                    st.write("✅ Data ready. Now computing features...")
-                    df = make_features(census)
-                    st.write("Data sample:", df.head())
+    st.subheader(" Neighborhood Data")
+    st.dataframe(
+        df[["median_income", "poverty_count", "eviction_rate", "rent_change_12m"]],
+        use_container_width=True
+    )
 
-                    st.write("⚙️ Step 4: Running model...")
-                    model, df, mae = train_model(df)
+    st.metric("Predicted Risk (0-100)", f"{r['risk']:.2f}")
+    st.caption("Color Scale: 🟢 Low  | 🟠 Moderate  | 🔴 High")
 
-                    st.subheader("📊 Neighborhood Data")
-                    st.write(df[["NAME", "median_income", "poverty_count", "eviction_rate", "rent_change_12m"]])
+    st.subheader("🗺️ Map Visualization")
+    m = make_map(r["lat"], r["lon"], df, user_input)
+    st_folium(m, width=900, height=550)
 
-                    st.subheader("🔍 Predicted Risk Score")
-                    risk_val = df["predicted_risk"].iloc[0]
-                    st.metric(label="Predicted Risk (0–100)", value=f"{risk_val:.2f}")
+    st.caption(f"Model (synthetic) MAE: {r['mae']:.2f}")
 
-                    st.caption(f"Model Mean Absolute Error (synthetic test): {mae:.2f}")
-
-                    # Map
-                    st.subheader("🗺️ Map View")
-                    m = make_map(lat, lon, df, user_input)
-                    st_folium(m, width=700, height=500)
-
-        st.write("✅ Done.")
-
+# ---------------- Reset Option -------------------
+if st.sidebar.button("🔄 Reset Session"):
+    st.session_state.analysis_done = False
+    st.session_state.results = {}
+    st.rerun()  # ✅ simple reset

@@ -11,6 +11,8 @@ from movemap_helpers import (
     generate_dummy_census_for_tract,
     make_features,
     train_model,
+    make_synthetic_dataset,
+    train_model_on_train_test,
 )
 from movemap_map import make_map
 import movemap_ui as ui
@@ -98,8 +100,27 @@ if st.button("Analyze Location"):
                 
                 status_text.markdown(ui.loading_html("🤖", "Running AI risk analysis..."), unsafe_allow_html=True)
                 progress_bar.progress(80)
-                df = make_features(census)
-                model, df, mae = train_model(df)
+
+                # Create separate synthetic datasets for train and test so the model must generalize
+                train_df = make_synthetic_dataset(tract_id, user_input, n=50)
+                test_df = make_synthetic_dataset(tract_id, user_input, n=20)
+
+                # Compute features and risk scores for both
+                train_df = make_features(train_df)
+                test_df = make_features(test_df)
+
+                # Compute features for the single-census sample we'll predict for
+                predict_df = make_features(census)
+
+                # Train on train_df and evaluate on test_df
+                model, pred_df, mae = train_model_on_train_test(train_df, test_df, predict_df)
+
+                # If the training function returned predictions, use that for display
+                if pred_df is not None and "predicted_risk" in pred_df.columns:
+                    df = pred_df
+                else:
+                    # Fallback: show the single sample with its true risk
+                    df = predict_df
                 
                 # Final animation
                 status_text.markdown(ui.loading_html("✨", "Preparing your custom visualization..."), unsafe_allow_html=True)
@@ -110,7 +131,7 @@ if st.button("Analyze Location"):
                 
                 st.session_state.results = {
                     "lat": lat, "lon": lon, "county": county, "state": state,
-                    "df": df, "mae": mae, "risk": df["predicted_risk"].iloc[0]
+                    "df": df, "mae": mae, "risk": df.get("predicted_risk", df.get("risk_score")).iloc[0]
                 }
                 st.session_state.analysis_done = True
                 

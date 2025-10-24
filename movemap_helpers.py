@@ -41,6 +41,26 @@ def generate_dummy_census_for_tract(tract_id, name="Tract"):
     }])
 
 
+def make_synthetic_dataset(tract_id, name="Tract", n=50):
+    """Create a synthetic dataset of `n` pseudo-census rows for a tract.
+
+    This produces random-but-plausible rows so the model must generalize
+    across different samples rather than memorizing a single example.
+    """
+    rows = []
+    for i in range(n):
+        rows.append({
+            "GEOID": tract_id,
+            "NAME": f"{name} #{i+1}",
+            # broaden ranges slightly so train/test differ
+            "median_income": random.randint(30000, 110000),
+            "poverty_count": random.randint(50, 1200),
+            "eviction_rate": random.uniform(0.5, 12.0),
+            "rent_change_12m": random.uniform(0.0, 0.15),
+        })
+    return pd.DataFrame(rows)
+
+
 def make_features(census):
     df = census.copy()
     df["rent_income_ratio"] = df["rent_change_12m"] / df["median_income"]
@@ -65,3 +85,30 @@ def train_model(df):
     mae = mean_absolute_error(yte, model.predict(Xte))
     df["predicted_risk"] = model.predict(X)
     return model, df, mae
+
+
+def train_model_on_train_test(train_df, test_df, predict_df=None):
+    """Train on `train_df`, evaluate on `test_df`, optionally predict `predict_df`.
+
+    Returns (model, predict_df_with_preds_or_None, mae).
+    """
+    # Features
+    feats = ["median_income", "poverty_count", "eviction_rate", "rent_income_ratio"]
+    Xtr = train_df[feats]
+    ytr = train_df["risk_score"]
+
+    Xte = test_df[feats]
+    yte = test_df["risk_score"]
+
+    model = RandomForestRegressor(n_estimators=200, random_state=42)
+    model.fit(Xtr, ytr)
+
+    # Evaluate on the separate test set
+    mae = mean_absolute_error(yte, model.predict(Xte))
+
+    pred_df = None
+    if predict_df is not None:
+        pred_df = predict_df.copy()
+        pred_df["predicted_risk"] = model.predict(pred_df[feats])
+
+    return model, pred_df, mae

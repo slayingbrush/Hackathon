@@ -1,0 +1,1 @@
+web: streamlit run movemap_ai.py

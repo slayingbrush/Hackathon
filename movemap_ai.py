@@ -44,7 +44,7 @@ st.sidebar.caption("Developed by UTK NSBE")
 
 #  Main Interface
 
-st.title("🏙️ MoveMap AI — Intelligent Housing Risk Explorer")
+st.title("MoveMap AI — Intelligent Housing Risk Explorer")
 st.write(
     "Enter any **city, ZIP code, or neighborhood** to visualize "
     "housing affordability and displacement risk."
@@ -56,7 +56,7 @@ if "analysis_done" not in st.session_state:
 if "results" not in st.session_state:
     st.session_state.results = {}
 
-user_input = st.text_input("📍 Search for a location:", "Knoxville, TN")
+user_input = st.text_input("Search for a location:", "Knoxville, TN")
 
 # Button Logic 
 if st.button("Analyze Location"):
@@ -160,7 +160,7 @@ if st.session_state.analysis_done:
     st.caption(f"Model (synthetic) MAE: {r['mae']:.2f}")
 
 # ---------------- Reset Option -------------------
-if st.sidebar.button("🔄 Reset Session"):
+if st.sidebar.button("Reset Session"):
     st.session_state.analysis_done = False
     st.session_state.results = {}
     st.rerun()  # ✅ simple reset

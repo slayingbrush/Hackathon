@@ -52,7 +52,8 @@ def make_map(lat, lon, df, loc_name):
         f"Risk Score: <b>{r:.1f}</b>"
     )
     folium.CircleMarker(
-        [lat, lon], radius=10, color=color,
-        fill=True, fill_color=color, fill_opacity=0.8, popup=html
+        [lat, lon], radius=20, color=color,
+        fill=True, fill_color=color, fill_opacity=0.8, popup=html,
+        weight=2  # Add a slightly thicker border
     ).add_to(m)
     return m
